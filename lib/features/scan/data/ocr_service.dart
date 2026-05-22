@@ -22,14 +22,9 @@ class OcrService {
       final text = results[0] as String?;
       final barcodes = results[1] as List<String>;
 
-      return OcrResult(
-        text: text,
-        barcodes: barcodes,
-      );
+      return OcrResult(text: text, barcodes: barcodes);
     } catch (e) {
-      return OcrResult(
-        error: 'Erro ao processar imagem: $e',
-      );
+      return OcrResult(error: 'Erro ao processar imagem: $e');
     }
   }
 

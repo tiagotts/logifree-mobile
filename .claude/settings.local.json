@@ -9,7 +9,18 @@
       "Bash(open:*)",
       "Bash(xcrun simctl:*)",
       "Bash(chmod:*)",
-      "Bash(flutter clean:*)"
+      "Bash(flutter clean:*)",
+      "Bash(echo \"=== Telas \\(cabeçalho e indice\\) ===\" && head -80 /Users/tiagotts/Documents/projetos/workspace/logifree/logifree-mobile/docs/LogiFree_Mobile_Telas.md && echo && echo \"=== Sprint atual no CLAUDE.md ===\" && grep -in \"sprint\" /Users/tiagotts/Documents/projetos/workspace/logifree/logifree-mobile/CLAUDE.md || echo \"Nenhuma mencao a sprint\" && echo && echo \"=== Endpoint auth no back sibling ===\" && grep -rl \"mobile/sign-in\\\\|auth/mobile\" /Users/tiagotts/Documents/projetos/workspace/logifree/logifree-back-front 2>/dev/null | head -5 || echo \"Repo sibling nao encontrado ou sem matches\")",
+      "Read(//Users/tiagotts/Documents/projetos/workspace/logifree/logifree-back-front/**)",
+      "Bash(flutter --version)",
+      "Bash(flutter pub *)",
+      "Bash(dart format *)",
+      "Bash(flutter test *)",
+      "Bash(exit 0)",
+      "Bash(exit 1)"
+    ],
+    "additionalDirectories": [
+      "/Users/tiagotts/Documents/projetos/workspace/logifree/logifree-mobile"
     ]
   }
 }

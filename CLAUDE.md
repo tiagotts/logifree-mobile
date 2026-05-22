@@ -8,6 +8,26 @@ Aplicação mobile Flutter para o sistema **LogiFree** - Sistema de gestão de e
 
 **IMPORTANTE**: Documentação arquitetural completa em `docs/`. Este repo é parte de um monorepo maior (`logifree-back-front`). Decisões cross-platform estão documentadas em `../logifree-back-front/.claude/ia/`.
 
+## Estado Atual do Projeto
+
+O repositório está em fase de **POC** (prova de conceito). Boa parte da arquitetura descrita neste arquivo é o **alvo planejado**, ainda não implementado. Antes de seguir qualquer instrução, confira o que já existe.
+
+**Já implementado:**
+
+- `lib/main.dart` — `MyApp` com `MaterialApp` direto (sem `app.dart`, sem go_router).
+- `lib/features/scan/` — POC de OCR: `OcrService` (Google ML Kit), `OcrResult`, `ScanScreen` (`StatefulWidget` com `setState` — aceitável para estado local do POC).
+- `test/test_helpers/` — infra de teste com mocktail. Ver `docs/LogiFree_Mobile_Testes.md`.
+
+**Ainda NÃO existe** (não assuma que está pronto):
+
+- Riverpod, go_router, Dio, Sentry, Shorebird, sqflite, connectivity_plus, flutter_secure_storage, freezed, build_runner — nenhum instalado no `pubspec.yaml`.
+- `lib/core/`, `lib/shared/`, `app.dart`, features `auth` / `packages` / `delivery`.
+- Autenticação, modo offline, code generation.
+
+`pubspec.yaml` hoje contém apenas: `google_mlkit_text_recognition`, `google_mlkit_barcode_scanning`, `image_picker`, `cupertino_icons` (dev: `flutter_lints`, `mocktail`).
+
+Ao implementar uma feature nova, é esperado adicionar a dependência correspondente do stack-alvo e seguir as camadas descritas abaixo.
+
 ## Stack Tecnológico
 
 | Componente | Tecnologia | Versão | Motivo |
@@ -25,6 +45,8 @@ Aplicação mobile Flutter para o sistema **LogiFree** - Sistema de gestão de e
 | Observabilidade | Sentry Flutter | 8.x | Mesma plataforma do back/front |
 | Hot Updates | Shorebird | 2.x | Patches sem App Store/Play |
 | Codegen | freezed, json_serializable, riverpod_generator | - | Data classes, JSON, providers |
+
+> A tabela acima é o **stack-alvo**. Veja "Estado Atual do Projeto" para o que já está de fato instalado.
 
 Veja `docs/LogiFree_Mobile_Stack.md` para detalhes completos.
 
@@ -56,11 +78,15 @@ lib/
     └── widgets/              # Componentes reutilizáveis
 ```
 
+> Esta é a estrutura-alvo. Hoje existem apenas `lib/main.dart` e `lib/features/scan/` (`data/` + `presentation/`).
+
 Veja `docs/LogiFree_Mobile_Estrutura.md` para detalhes completos.
 
 ## Comandos Comuns
 
 ### Desenvolvimento
+
+> Para rodar o POC, `flutter run` basta. As variáveis `--dart-define` abaixo ainda não são lidas pelo app (`core/config/env.dart` não existe).
 
 ```bash
 # Instalar dependências
@@ -81,6 +107,8 @@ flutter run -d <device-id>
 
 ### Code Generation
 
+> `build_runner` e os pacotes de codegen (`freezed`, `json_serializable`, `riverpod_generator`) ainda não estão no `pubspec.yaml`. Os comandos abaixo só funcionam após adicioná-los.
+
 ```bash
 # Gerar código (Freezed, JSON, Riverpod)
 dart run build_runner build
@@ -99,7 +127,7 @@ dart run build_runner build --delete-conflicting-outputs
 flutter test
 
 # Teste específico
-flutter test test/features/auth/auth_service_test.dart
+flutter test test/features/scan/data/ocr_result_test.dart
 
 # Com coverage
 flutter test --coverage
@@ -113,12 +141,9 @@ flutter analyze
 
 # Formatar código
 dart format lib/ test/
-
-# Lints customizados em analysis_options.yaml:
-# - strict-casts, strict-inference, strict-raw-types
-# - prefer_single_quotes, require_trailing_commas
-# - avoid_print (use dart:developer log ou Sentry)
 ```
+
+> `analysis_options.yaml` hoje só inclui `package:flutter_lints/flutter.yaml`, sem regras customizadas nem seção `analyzer:` estrita. As regras alvo (`strict-casts`, `strict-inference`, `prefer_single_quotes`, `require_trailing_commas`, `avoid_print`) ainda precisam ser configuradas — siga-as como convenção mesmo antes de serem enforçadas.
 
 ### Build
 
@@ -268,8 +293,19 @@ Consulte sempre antes de implementar:
 - **`docs/LogiFree_Mobile_OCR.md`**: OCR e captura de etiquetas
 - **`docs/LogiFree_Mobile_Offline.md`**: Estratégia offline
 - **`docs/LogiFree_Mobile_Boas_Praticas.md`**: Práticas Flutter/Dart
+- **`docs/LogiFree_Mobile_Telas.md`**: Especificação de telas e fluxos de UX
+- **`docs/LogiFree_Mobile_Testes.md`**: Infra e padrões de teste (ler antes de criar `*_test.dart`)
 
 **Repo sibling**: `../logifree-back-front/.claude/ia/` contém docs cross-platform (modelo de dados, permissões, tratamento de erros, etc.)
+
+## Subagentes Disponíveis
+
+Definidos em `.claude/agents/` — acione proativamente:
+
+- **mobile-flutter**: criar/alterar telas, providers, serviços e features em `lib/`.
+- **mobile-tester**: escrever/atualizar testes após cada feature ou bug-fix.
+- **mobile-code-reviewer**: revisar o diff antes de commit/push.
+- **mobile-backlog-manager**: priorizar próximos passos a partir do backlog mobile.
 
 ## Plataformas Foco
 

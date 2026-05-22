@@ -49,6 +49,13 @@ Práticas de Flutter/Dart: state management com Riverpod, navigation com go_rout
 
 ---
 
+
+### `LogiFree_Mobile_Testes.md`
+Infra de teste em `test/test_helpers/`, padrão de escrita, mocktail, plugins nativos, anti-padrões.
+
+**Quando consultar:** sempre antes de escrever um `*_test.dart`.
+
+
 ## Documentos no repo sibling (`../logifree-back-front/.claude/ia/`)
 
 Use estes como **fonte da verdade** para tudo que é cross-platform:
@@ -79,6 +86,7 @@ Use estes como **fonte da verdade** para tudo que é cross-platform:
 | Adicionar dependência | `LogiFree_Mobile_Stack.md` |
 | Verificar permissão | `LogiFree_Permissoes.md` (back-front) |
 | Tipos compartilhados | `LogiFree_Modelo_Dados.md` (back-front) |
+| Escrever teste | `LogiFree_Mobile_Testes.md` |
 
 ---
 
