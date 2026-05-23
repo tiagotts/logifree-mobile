@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/offline/sync_service.dart';
 import '../../../core/utils/formatters.dart';
-import '../../auth/domain/doorman.dart';
+import '../../auth/application/session_providers.dart';
+import '../../offline/presentation/pending_operations_screen.dart';
 import '../application/packages_providers.dart';
 import '../domain/daily_summary.dart';
 import '../domain/package_status.dart';
@@ -19,14 +21,28 @@ class HomeScreen extends ConsumerWidget {
     final theme = Theme.of(context);
     final summary = ref.watch(dailySummaryProvider);
     final recent = ref.watch(recentPackagesProvider);
+    final AsyncValue<SyncQueueState> queueState = ref.watch(
+      syncQueueStateProvider,
+    );
+    final int pendingCount = queueState.asData?.value.operations.length ?? 0;
+    final doorman = ref.watch(currentDoormanProvider);
 
     return Scaffold(
-      appBar: AppBar(title: Text(demoDoorman.condominium)),
+      appBar: AppBar(
+        title: Text(doorman.condominium),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.account_circle_outlined),
+            tooltip: 'Perfil',
+            onPressed: () => context.push('/profile'),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
           Text(
-            'Olá, ${demoDoorman.firstName}',
+            'Olá, ${doorman.firstName}',
             style: theme.textTheme.headlineSmall?.copyWith(
               fontWeight: FontWeight.w700,
             ),
@@ -42,6 +58,13 @@ class HomeScreen extends ConsumerWidget {
           _SummaryRow(summary: summary),
           const SizedBox(height: 20),
           _ScanButton(onTap: () => context.push('/scan')),
+          if (pendingCount > 0) ...[
+            const SizedBox(height: 12),
+            _PendingOpsBadge(
+              count: pendingCount,
+              onTap: () => context.push('/pending'),
+            ),
+          ],
           const SizedBox(height: 28),
           Row(
             children: [
@@ -156,6 +179,66 @@ class _SummaryCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PendingOpsBadge extends StatelessWidget {
+  const _PendingOpsBadge({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    // Tom âmbar discreto — combina com o banner offline e não compete
+    // com a ação primária "Escanear pacote".
+    const Color amber = Color(0xFFCA8A04);
+    final String label = count == 1
+        ? '1 operação pendente'
+        : '$count operações pendentes';
+
+    return Material(
+      color: amber.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: <Widget>[
+              const Icon(Icons.cloud_off_outlined, color: amber, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: amber,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Aguardando sincronização com o servidor.',
+                      style: TextStyle(
+                        color: colors.onSurfaceVariant,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: amber),
+            ],
+          ),
+        ),
       ),
     );
   }

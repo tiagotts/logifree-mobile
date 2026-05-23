@@ -45,5 +45,18 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Usamos a câmera para ler a etiqueta da encomenda.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Usamos a galeria para selecionar a foto da etiqueta da encomenda.</string>
+	<!-- NSAllowsLocalNetworking libera HTTP cleartext para hosts em redes locais
+	     (localhost, 192.168.x.x, 10.x.x.x) durante o desenvolvimento. Em producao
+	     a API e HTTPS, entao essa excecao nao se aplica. Apple aprova esse modo
+	     (diferente de NSAllowsArbitraryLoads, que precisa de justificativa). -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

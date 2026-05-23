@@ -17,7 +17,8 @@
       "Bash(dart format *)",
       "Bash(flutter test *)",
       "Bash(exit 0)",
-      "Bash(exit 1)"
+      "Bash(exit 1)",
+      "Bash(ipconfig getifaddr *)"
     ],
     "additionalDirectories": [
       "/Users/tiagotts/Documents/projetos/workspace/logifree/logifree-mobile"

@@ -1,15 +1,18 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../auth/domain/doorman.dart';
+import '../../../core/api/api_error.dart';
 import '../../packages/application/packages_providers.dart';
+import '../../packages/application/units_provider.dart';
+import '../../packages/data/dto/receive_package_request.dart';
+import '../../packages/data/dto/unit_dto.dart';
+import '../../packages/data/package_repository.dart';
 import '../../packages/domain/carrier.dart';
-import '../../packages/domain/package.dart';
-import '../../packages/domain/package_event.dart';
-import '../../packages/domain/package_status.dart';
 import '../domain/scan_capture.dart';
 
 /// Conferência dos dados extraídos antes de registrar a encomenda.
@@ -26,73 +29,110 @@ class ConfirmReceiptScreen extends ConsumerStatefulWidget {
 class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
   late final TextEditingController _trackingController;
   late final TextEditingController _recipientController;
-  late final TextEditingController _unitController;
   final TextEditingController _notesController = TextEditingController();
 
   late Carrier _carrier;
+  UnitDto? _selectedUnit;
+  bool _submitting = false;
 
   @override
   void initState() {
     super.initState();
-    // Pré-preenche os campos com o que o LabelParser identificou na etiqueta.
     final label = widget.capture.label;
     _trackingController = TextEditingController(text: label.trackingCode ?? '');
     _recipientController = TextEditingController(
       text: label.recipientName ?? '',
     );
-    _unitController = TextEditingController(text: label.unit ?? '');
     _carrier = label.carrier ?? Carrier.other;
+
+    // Tenta pré-selecionar a unidade depois que a lista do back chega.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybePreselectUnit());
+  }
+
+  Future<void> _maybePreselectUnit() async {
+    final parsedUnit = widget.capture.label.unit;
+    if (parsedUnit == null) return;
+    try {
+      final units = await ref.read(unitsProvider.future);
+      if (!mounted) return;
+      final target = parsedUnit.toLowerCase();
+      for (final unit in units) {
+        if (unit.displayName.toLowerCase() == target) {
+          setState(() => _selectedUnit = unit);
+          break;
+        }
+      }
+    } on Object {
+      // Falha em carregar unidades não bloqueia a tela — porteiro
+      // ainda pode selecionar manualmente assim que a lista chegar.
+    }
   }
 
   @override
   void dispose() {
     _trackingController.dispose();
     _recipientController.dispose();
-    _unitController.dispose();
     _notesController.dispose();
     super.dispose();
   }
 
-  void _confirm() {
-    final now = DateTime.now();
-    final recipient = _recipientController.text.trim();
-    final unit = _unitController.text.trim();
+  Future<void> _confirm() async {
+    final unit = _selectedUnit;
+    if (unit == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecione a unidade do destinatário.')),
+      );
+      return;
+    }
     final tracking = _trackingController.text.trim();
+    if (tracking.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Informe o código de rastreio.')),
+      );
+      return;
+    }
+
+    setState(() => _submitting = true);
+    final messenger = ScaffoldMessenger.of(context);
     final notes = _notesController.text.trim();
-    final isIdentified = recipient.isNotEmpty && unit.isNotEmpty;
+    final repo = ref.read(packageRepositoryProvider);
 
-    final package = Package(
-      id: 'pkg-${now.microsecondsSinceEpoch.toRadixString(36)}',
-      trackingCode: tracking.isEmpty ? 'Sem código' : tracking,
-      carrier: _carrier,
-      status: isIdentified
-          ? PackageStatus.awaitingPickup
-          : PackageStatus.pendingIdentification,
-      receivedAt: now,
-      receivedBy: demoDoorman.name,
-      recipientName: isIdentified ? recipient : null,
-      unit: isIdentified ? unit : null,
-      notes: notes.isEmpty ? null : notes,
-      labelPhotoPath: widget.capture.photoPath,
-      events: [
-        PackageEvent(
-          type: PackageEventType.received,
-          timestamp: now,
-          actor: demoDoorman.name,
+    try {
+      await repo.receive(
+        ReceivePackageRequest(
+          trackingCode: tracking,
+          unitId: unit.id,
+          description: notes.isEmpty ? null : notes,
         ),
-        if (isIdentified)
-          PackageEvent(
-            type: PackageEventType.identified,
-            timestamp: now,
-            actor: demoDoorman.name,
-          ),
-      ],
-    );
+      );
+    } on DioException catch (e) {
+      if (!mounted) return;
+      final err = e.error;
+      final message = err is AppError
+          ? err.userMessage
+          : 'Não foi possível registrar a encomenda. Tente novamente.';
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+      setState(() => _submitting = false);
+      return;
+    } on Object {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível registrar a encomenda.'),
+        ),
+      );
+      setState(() => _submitting = false);
+      return;
+    }
 
-    ref.read(packagesProvider.notifier).register(package);
+    if (!mounted) return;
+
+    // Refaz o GET /packages para a Home/Lista enxergarem o pacote novo.
+    // Não esperamos o resultado — a UX volta pra Home imediatamente.
+    unawaited(ref.read(packagesProvider.notifier).refresh());
 
     context.go('/home');
-    ScaffoldMessenger.of(context).showSnackBar(
+    messenger.showSnackBar(
       const SnackBar(content: Text('Encomenda registrada com sucesso.')),
     );
   }
@@ -113,6 +153,7 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final unitsAsync = ref.watch(unitsProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Confirmar recebimento')),
@@ -120,7 +161,7 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
         children: [
           if (widget.capture.label.hasRecipient) ...[
-            _ParsedBanner(),
+            const _ParsedBanner(),
             const SizedBox(height: 12),
           ],
           GestureDetector(
@@ -147,7 +188,7 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
             ),
           ),
           const SizedBox(height: 20),
-          _SectionLabel('Encomenda'),
+          const _SectionLabel('Encomenda'),
           const SizedBox(height: 10),
           DropdownMenu<Carrier>(
             initialSelection: _carrier,
@@ -176,36 +217,36 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
             ),
           ),
           const SizedBox(height: 24),
-          _SectionLabel('Destinatário'),
+          const _SectionLabel('Destinatário'),
           const SizedBox(height: 4),
           Text(
-            'Confira os dados lidos da etiqueta. Se ficarem em branco, a '
-            'encomenda entra como pendente de identificação.',
+            'Selecione a unidade. O morador é notificado automaticamente '
+            'pelo back ao registrar.',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _unitController,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Unidade',
-              hintText: 'Ex.: Apto 101',
-              prefixIcon: Icon(Icons.apartment_outlined),
-            ),
+          _UnitField(
+            unitsAsync: unitsAsync,
+            selected: _selectedUnit,
+            onChanged: (unit) => setState(() => _selectedUnit = unit),
+            onRetry: () => ref.invalidate(unitsProvider),
           ),
           const SizedBox(height: 14),
           TextField(
             controller: _recipientController,
             textCapitalization: TextCapitalization.words,
             decoration: const InputDecoration(
-              labelText: 'Nome do morador',
+              labelText: 'Nome do morador (opcional)',
               prefixIcon: Icon(Icons.person_outline),
+              helperText:
+                  'Usado só para registro local; o back identifica '
+                  'pelo cadastro da unidade.',
             ),
           ),
           const SizedBox(height: 24),
-          _SectionLabel('Observações'),
+          const _SectionLabel('Observações'),
           const SizedBox(height: 12),
           TextField(
             controller: _notesController,
@@ -220,10 +261,101 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.all(16),
         child: FilledButton.icon(
-          onPressed: _confirm,
-          icon: const Icon(Icons.check),
-          label: const Text('Confirmar recebimento'),
+          onPressed: _submitting ? null : _confirm,
+          icon: _submitting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                )
+              : const Icon(Icons.check),
+          label: Text(
+            _submitting ? 'Registrando...' : 'Confirmar recebimento',
+          ),
         ),
+      ),
+    );
+  }
+}
+
+/// Dropdown de unidade que lida com o estado async (loading/error/data).
+class _UnitField extends StatelessWidget {
+  const _UnitField({
+    required this.unitsAsync,
+    required this.selected,
+    required this.onChanged,
+    required this.onRetry,
+  });
+
+  final AsyncValue<List<UnitDto>> unitsAsync;
+  final UnitDto? selected;
+  final ValueChanged<UnitDto?> onChanged;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return unitsAsync.when(
+      loading: () => const InputDecorator(
+        decoration: InputDecoration(
+          labelText: 'Unidade',
+          prefixIcon: Icon(Icons.apartment_outlined),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 10),
+            Text('Carregando unidades...'),
+          ],
+        ),
+      ),
+      error: (e, _) => Card(
+        color: theme.colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Icon(
+                Icons.error_outline,
+                color: theme.colorScheme.onErrorContainer,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Não foi possível carregar a lista de unidades.',
+                  style: TextStyle(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: onRetry,
+                child: const Text('Tentar de novo'),
+              ),
+            ],
+          ),
+        ),
+      ),
+      data: (units) => DropdownMenu<UnitDto>(
+        initialSelection: selected,
+        expandedInsets: EdgeInsets.zero,
+        enableFilter: true,
+        requestFocusOnTap: true,
+        label: const Text('Unidade'),
+        leadingIcon: const Icon(Icons.apartment_outlined),
+        menuHeight: 320,
+        onSelected: onChanged,
+        dropdownMenuEntries: [
+          for (final unit in units)
+            DropdownMenuEntry<UnitDto>(
+              value: unit,
+              label: unit.displayName,
+            ),
+        ],
       ),
     );
   }
@@ -231,6 +363,8 @@ class _ConfirmReceiptScreenState extends ConsumerState<ConfirmReceiptScreen> {
 
 /// Aviso de que os campos foram preenchidos a partir da leitura da etiqueta.
 class _ParsedBanner extends StatelessWidget {
+  const _ParsedBanner();
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);

@@ -30,8 +30,9 @@ Future<void> pumpAppWidget(
       theme: theme ?? ThemeData(useMaterial3: true),
       locale: locale,
       home: child,
-      navigatorObservers:
-          navigatorObserver != null ? [navigatorObserver] : const [],
+      navigatorObservers: navigatorObserver != null
+          ? [navigatorObserver]
+          : const [],
     ),
   );
   await tester.pumpAndSettle();
@@ -43,5 +44,9 @@ Future<void> settle(
   WidgetTester tester, {
   Duration timeout = const Duration(seconds: 3),
 }) async {
-  await tester.pumpAndSettle(const Duration(milliseconds: 100), EnginePhase.sendSemanticsUpdate, timeout);
+  await tester.pumpAndSettle(
+    const Duration(milliseconds: 100),
+    EnginePhase.sendSemanticsUpdate,
+    timeout,
+  );
 }

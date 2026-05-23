@@ -960,6 +960,7 @@ Operações sem rede ficam em sqflite e sobem quando reconectar.
 - Idempotência client-side via UUID v7.
 - Multi-tenant via header `X-Condominium-Slug`.
 - Plataforma primária: Android.
+- Protótipo de UI (8 telas do núcleo, sessão 2026-05-22) usa `flutter_riverpod` **sem codegen**: `riverpod_generator`, `freezed` e `build_runner` ficam fora do `pubspec.yaml` enquanto não houver backend real. Quando o CARD-MOBILE-007 (AuthService HTTP) começar, esses pacotes entram junto com a refatoração dos providers manuais para anotações `@riverpod`.
 
 ---
 

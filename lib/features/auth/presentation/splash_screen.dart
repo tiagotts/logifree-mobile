@@ -1,31 +1,41 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-/// Tela de abertura. Exibe a marca por um instante e segue para o login.
-class SplashScreen extends StatefulWidget {
+import '../application/auth_controller.dart';
+import '../application/auth_state.dart';
+
+/// Tela de abertura. Hidrata a sessão salva e decide se vai para a Home
+/// ou para o Login.
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
-  Timer? _timer;
+class _SplashScreenState extends ConsumerState<SplashScreen> {
+  /// Tempo mínimo de exibição do splash, para não "piscar" se a hidratação
+  /// for muito rápida.
+  static const Duration _minimumDelay = Duration(milliseconds: 700);
 
   @override
   void initState() {
     super.initState();
-    _timer = Timer(const Duration(milliseconds: 1900), () {
-      if (mounted) context.go('/login');
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  Future<void> _bootstrap() async {
+    final controller = ref.read(authStateProvider.notifier);
+    await Future.wait<void>([
+      controller.hydrate(),
+      Future<void>.delayed(_minimumDelay),
+    ]);
+    if (!mounted) return;
+    final state = ref.read(authStateProvider);
+    context.go(state is Authenticated ? '/home' : '/login');
   }
 
   @override

@@ -353,19 +353,24 @@ class _ActionBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Widget? action = switch (package.status) {
-      PackageStatus.awaitingPickup => FilledButton.icon(
-        onPressed: () => context.push('/packages/${package.id}/deliver'),
-        icon: const Icon(Icons.local_shipping_outlined),
-        label: const Text('Registrar entrega'),
-      ),
-      PackageStatus.pendingIdentification => OutlinedButton.icon(
-        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Identificação manual disponível na versão completa.',
-            ),
+      PackageStatus.awaitingPickup => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FilledButton.icon(
+            onPressed: () => context.push('/packages/${package.id}/deliver'),
+            icon: const Icon(Icons.local_shipping_outlined),
+            label: const Text('Registrar entrega'),
           ),
-        ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () => context.push('/packages/${package.id}/return'),
+            icon: const Icon(Icons.undo),
+            label: const Text('Registrar devolução'),
+          ),
+        ],
+      ),
+      PackageStatus.pendingIdentification => FilledButton.icon(
+        onPressed: () => context.push('/packages/${package.id}/identify'),
         icon: const Icon(Icons.person_search_outlined),
         label: const Text('Identificar destinatário'),
       ),

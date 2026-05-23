@@ -56,8 +56,12 @@ class _PackagesListScreenState extends ConsumerState<PackagesListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final packages = _applyFilters(ref.watch(packagesProvider));
+    final asyncPackages = ref.watch(packagesProvider);
+    final allPackages = asyncPackages.asData?.value ?? const <Package>[];
+    final packages = _applyFilters(allPackages);
     final hasQueryOrFilter = _query.isNotEmpty || _statusFilter != null;
+    final isLoading = asyncPackages.isLoading && allPackages.isEmpty;
+    final loadError = asyncPackages.hasError ? asyncPackages.error : null;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Pacotes')),
@@ -102,29 +106,76 @@ class _PackagesListScreenState extends ConsumerState<PackagesListScreen> {
           ),
           const SizedBox(height: 4),
           Expanded(
-            child: packages.isEmpty
-                ? _EmptyState(filtered: hasQueryOrFilter)
-                : RefreshIndicator(
-                    onRefresh: () =>
-                        Future<void>.delayed(const Duration(milliseconds: 600)),
-                    child: ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                      itemCount: packages.length,
-                      itemBuilder: (context, index) {
-                        final package = packages[index];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: PackageCard(
-                            package: package,
-                            onTap: () =>
-                                context.push('/packages/${package.id}'),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
+            child: switch ((isLoading, loadError, packages.isEmpty)) {
+              (true, _, _) => const Center(child: CircularProgressIndicator()),
+              (_, final Object _, _) => _ErrorView(
+                onRetry: () => ref.invalidate(packagesProvider),
+              ),
+              (_, _, true) => _EmptyState(filtered: hasQueryOrFilter),
+              _ => RefreshIndicator(
+                onRefresh: () async {
+                  ref.invalidate(packagesProvider);
+                  await ref.read(packagesProvider.future);
+                },
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                  itemCount: packages.length,
+                  itemBuilder: (context, index) {
+                    final package = packages[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: PackageCard(
+                        package: package,
+                        onTap: () =>
+                            context.push('/packages/${package.id}'),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.onRetry});
+
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.cloud_off_outlined,
+              size: 56,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Não foi possível carregar os pacotes',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar de novo'),
+            ),
+          ],
+        ),
       ),
     );
   }

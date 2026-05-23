@@ -1,29 +1,31 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../application/auth_controller.dart';
+import '../application/auth_state.dart';
 import '../domain/doorman.dart';
 
 /// Tela de login.
 ///
-/// No protótipo não há autenticação real: "Entrar" apenas navega para a Home.
-/// Os campos vêm pré-preenchidos para agilizar a demonstração.
-class LoginScreen extends StatefulWidget {
+/// Submete via `AuthController.signIn` e reage ao `authStateProvider`:
+/// - `Authenticated` → navega para `/home`.
+/// - `MfaRequired`   → exibe aviso (o fluxo MFA não está no MVP).
+/// - `AuthFailure`   → exibe `userMessage` em pt-BR no snackbar.
+class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen> {
   final TextEditingController _emailController = TextEditingController(
     text: demoDoorman.email,
   );
-  final TextEditingController _passwordController = TextEditingController(
-    text: 'demo1234',
-  );
+  final TextEditingController _passwordController = TextEditingController();
 
   bool _obscurePassword = true;
-  bool _submitting = false;
 
   @override
   void dispose() {
@@ -33,9 +35,13 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _signIn() async {
-    setState(() => _submitting = true);
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (mounted) context.go('/home');
+    FocusScope.of(context).unfocus();
+    await ref
+        .read(authStateProvider.notifier)
+        .signIn(
+          email: _emailController.text.trim(),
+          password: _passwordController.text,
+        );
   }
 
   void _showUnavailable() {
@@ -47,6 +53,28 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    // Reage a mudanças do estado de auth (sucesso → home, falha → snackbar).
+    ref.listen<AuthState>(authStateProvider, (previous, next) {
+      if (next is Authenticated) {
+        context.go('/home');
+      } else if (next is AuthFailure) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.error.userMessage)),
+        );
+      } else if (next is MfaRequired) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Verificação em duas etapas necessária. '
+              'Indisponível nesta versão.',
+            ),
+          ),
+        );
+      }
+    });
+
+    final isSubmitting = ref.watch(authStateProvider) is Authenticating;
 
     return Scaffold(
       body: SafeArea(
@@ -91,6 +119,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
                     autocorrect: false,
+                    enabled: !isSubmitting,
                     decoration: const InputDecoration(
                       labelText: 'E-mail',
                       prefixIcon: Icon(Icons.mail_outline),
@@ -100,6 +129,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   TextField(
                     controller: _passwordController,
                     obscureText: _obscurePassword,
+                    enabled: !isSubmitting,
+                    onSubmitted: (_) => _signIn(),
                     decoration: InputDecoration(
                       labelText: 'Senha',
                       prefixIcon: const Icon(Icons.lock_outline),
@@ -118,14 +149,14 @@ class _LoginScreenState extends State<LoginScreen> {
                   Align(
                     alignment: Alignment.centerRight,
                     child: TextButton(
-                      onPressed: _showUnavailable,
+                      onPressed: isSubmitting ? null : _showUnavailable,
                       child: const Text('Esqueci minha senha'),
                     ),
                   ),
                   const SizedBox(height: 8),
                   FilledButton(
-                    onPressed: _submitting ? null : _signIn,
-                    child: _submitting
+                    onPressed: isSubmitting ? null : _signIn,
+                    child: isSubmitting
                         ? const SizedBox(
                             width: 22,
                             height: 22,

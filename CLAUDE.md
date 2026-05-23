@@ -94,7 +94,7 @@ flutter pub get
 
 # Executar com variáveis de ambiente
 flutter run \
-  --dart-define=API_BASE_URL=https://api.logifree.com.br/api/v1 \
+  --dart-define=API_BASE_URL=http://localhost:3333/api/v1/ \
   --dart-define=SENTRY_DSN=https://... \
   --dart-define=ENVIRONMENT=development
 

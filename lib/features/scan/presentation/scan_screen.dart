@@ -1,282 +1,406 @@
+import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:io';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../data/ocr_result.dart';
-import '../data/ocr_service.dart';
-import '../domain/label_parser.dart';
-import '../domain/parsed_label.dart';
-import '../domain/scan_capture.dart';
+import '../application/camera_controller.dart';
+import '../application/ocr_controller.dart';
 
-/// Captura da etiqueta da encomenda.
+/// Captura ao vivo da etiqueta da encomenda.
 ///
-/// Reaproveita o POC de OCR (Google ML Kit via `image_picker`): o porteiro
-/// fotografa a etiqueta, o app lê o texto, extrai destinatário/unidade/código
-/// e segue para a conferência dos dados.
-class ScanScreen extends StatefulWidget {
+/// Fluxo principal:
+/// 1. Pede permissão de câmera (via `ScanCameraNotifier`).
+/// 2. Mostra `CameraPreview` fullscreen com overlay de mira.
+/// 3. Loop de detecção: a cada ~600ms tira uma foto, roda OCR + barcode scan.
+///    Quando detecta barcode, dispara haptic + navega para `/scan/confirm`.
+/// 4. Botões de fallback: "Capturar manualmente", "Galeria" e "Cancelar".
+///
+/// Por que polling com `takePicture` em vez de `startImageStream`?
+/// `startImageStream` exige conversão `CameraImage` → `InputImage` específica
+/// por plataforma (YUV420 no Android, BGRA8888 no iOS) e é frágil quanto a
+/// orientação. Para o MVP, o polling de ~1-2 fps já é suficiente: o porteiro
+/// só precisa de ~1s de latência da etiqueta ser reconhecida.
+class ScanScreen extends ConsumerStatefulWidget {
   const ScanScreen({super.key});
 
   @override
-  State<ScanScreen> createState() => _ScanScreenState();
+  ConsumerState<ScanScreen> createState() => _ScanScreenState();
 }
 
-class _ScanScreenState extends State<ScanScreen> {
-  final OcrService _ocrService = OcrService();
-  final ImagePicker _imagePicker = ImagePicker();
+class _ScanScreenState extends ConsumerState<ScanScreen> {
+  final ImagePicker _picker = ImagePicker();
 
-  String? _imagePath;
-  OcrResult? _result;
-  ParsedLabel? _label;
-  bool _isProcessing = false;
+  Timer? _detectionTimer;
+  bool _isCapturing = false;
+  bool _hasNavigated = false;
+  bool _initialized = false;
+
+  /// Intervalo entre detecções automáticas. ~1.6 fps — equilibra responsividade
+  /// e custo de CPU/bateria (OCR + barcode scanning são caros).
+  static const Duration _detectionInterval = Duration(milliseconds: 600);
+
+  @override
+  void initState() {
+    super.initState();
+    // Inicialização da câmera precisa rodar fora do `initState` para poder
+    // mexer no estado do `Notifier`.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_initialized || !mounted) return;
+      _initialized = true;
+      ref.read(scanCameraControllerProvider.notifier).initialize();
+    });
+  }
 
   @override
   void dispose() {
-    _ocrService.dispose();
+    _detectionTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _pickImage(ImageSource source) async {
+  void _ensureDetectionLoop(CameraController controller) {
+    if (_detectionTimer != null) return;
+    _detectionTimer = Timer.periodic(_detectionInterval, (_) {
+      _tryAutoCapture(controller);
+    });
+  }
+
+  Future<void> _tryAutoCapture(CameraController controller) async {
+    if (_isCapturing || _hasNavigated) return;
+    if (!controller.value.isInitialized) return;
+
+    _isCapturing = true;
     try {
-      final pickedFile = await _imagePicker.pickImage(
-        source: source,
+      final service = ref.read(scanCaptureServiceProvider);
+      final capture = await service.captureFromCamera(controller);
+      if (capture == null) return;
+      if (!mounted || _hasNavigated) return;
+
+      // Só navega automaticamente se OCR achou um barcode — caso contrário
+      // descarta este frame e segue esperando.
+      if (capture.ocr.hasBarcodes) {
+        await HapticFeedback.mediumImpact();
+        _hasNavigated = true;
+        _detectionTimer?.cancel();
+        if (!mounted) return;
+        await context.push('/scan/confirm', extra: capture);
+      } else {
+        // Apaga a foto efêmera — só guardamos a que vai pra confirmação.
+        unawaited(_silentlyDelete(capture.photoPath));
+      }
+    } on Object catch (e, st) {
+      developer.log(
+        'Erro no loop de auto-captura',
+        name: 'ScanScreen',
+        error: e,
+        stackTrace: st,
+      );
+    } finally {
+      _isCapturing = false;
+    }
+  }
+
+  Future<void> _captureManually(CameraController controller) async {
+    if (_isCapturing || _hasNavigated) return;
+    _detectionTimer?.cancel();
+    _isCapturing = true;
+    try {
+      final service = ref.read(scanCaptureServiceProvider);
+      final capture = await service.captureFromCamera(controller);
+      if (capture == null || !mounted) return;
+      _hasNavigated = true;
+      await HapticFeedback.lightImpact();
+      if (!mounted) return;
+      await context.push('/scan/confirm', extra: capture);
+    } finally {
+      _isCapturing = false;
+    }
+  }
+
+  Future<void> _pickFromGallery() async {
+    if (_isCapturing || _hasNavigated) return;
+    _detectionTimer?.cancel();
+    _isCapturing = true;
+    try {
+      final picked = await _picker.pickImage(
+        source: ImageSource.gallery,
         maxWidth: 1920,
         maxHeight: 1920,
         imageQuality: 85,
       );
-      if (pickedFile == null) return;
-
-      setState(() {
-        _imagePath = pickedFile.path;
-        _result = null;
-        _label = null;
-        _isProcessing = true;
-      });
-
-      final result = await _ocrService.processImage(pickedFile.path);
-
-      setState(() {
-        _result = result;
-        _label = LabelParser.parse(result);
-        _isProcessing = false;
-      });
-    } catch (e) {
-      setState(() {
-        _result = OcrResult(error: 'Erro ao selecionar imagem: $e');
-        _label = null;
-        _isProcessing = false;
-      });
+      if (picked == null) {
+        // Usuário cancelou — retoma o loop se a câmera ainda está ativa.
+        final state = ref.read(scanCameraControllerProvider);
+        if (state is ScanCameraReady) {
+          _ensureDetectionLoop(state.controller);
+        }
+        return;
+      }
+      final service = ref.read(scanCaptureServiceProvider);
+      final capture = await service.captureFromFile(picked.path);
+      if (!mounted) return;
+      _hasNavigated = true;
+      await context.push('/scan/confirm', extra: capture);
+    } on Object catch (e, st) {
+      developer.log(
+        'Erro ao selecionar imagem da galeria',
+        name: 'ScanScreen',
+        error: e,
+        stackTrace: st,
+      );
+    } finally {
+      _isCapturing = false;
     }
   }
 
-  void _continue() {
-    final path = _imagePath;
-    if (path == null) return;
-    context.push(
-      '/scan/confirm',
-      extra: ScanCapture(
-        photoPath: path,
-        ocr: _result ?? const OcrResult(),
-        label: _label ?? ParsedLabel.empty,
-      ),
-    );
+  Future<void> _silentlyDelete(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } on Object {
+      // Arquivo temporário — ignorar.
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final canContinue = _imagePath != null && !_isProcessing;
+    final state = ref.watch(scanCameraControllerProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Escanear etiqueta')),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Fotografe a etiqueta da encomenda. O app lê o texto e '
-                'identifica o destinatário automaticamente.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isProcessing
-                          ? null
-                          : () => _pickImage(ImageSource.camera),
-                      icon: const Icon(Icons.camera_alt_outlined),
-                      label: const Text('Câmera'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isProcessing
-                          ? null
-                          : () => _pickImage(ImageSource.gallery),
-                      icon: const Icon(Icons.photo_library_outlined),
-                      label: const Text('Galeria'),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
-              if (_imagePath != null) ...[
-                Card(
-                  child: Image.file(
-                    File(_imagePath!),
-                    fit: BoxFit.cover,
-                    height: 240,
-                    width: double.infinity,
-                  ),
-                ),
-                const SizedBox(height: 16),
-              ],
-              if (_isProcessing)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Column(
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 12),
-                      Text('Lendo etiqueta...'),
-                    ],
-                  ),
-                ),
-              if (_result != null && !_isProcessing)
-                _OcrSummary(
-                  result: _result!,
-                  label: _label ?? ParsedLabel.empty,
-                ),
-            ],
-          ),
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: Colors.white),
+          tooltip: 'Cancelar',
+          onPressed: () => context.pop(),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
+            tooltip: 'Selecionar da galeria',
+            onPressed: _pickFromGallery,
+          ),
+        ],
       ),
-      bottomNavigationBar: canContinue
-          ? SafeArea(
-              minimum: const EdgeInsets.all(16),
-              child: FilledButton.icon(
-                onPressed: _continue,
-                icon: const Icon(Icons.arrow_forward),
-                label: const Text('Continuar para conferência'),
-              ),
-            )
-          : null,
+      body: switch (state) {
+        ScanCameraLoading() => const _LoadingView(),
+        ScanCameraReady(:final controller) => _ReadyView(
+          controller: controller,
+          onManualCapture: () => _captureManually(controller),
+          onMount: () => _ensureDetectionLoop(controller),
+        ),
+        ScanCameraPermissionDenied(:final permanently) => _PermissionDeniedView(
+          permanently: permanently,
+          onOpenSettings: () =>
+              ref.read(scanCameraControllerProvider.notifier).openSettings(),
+          onRetry: () =>
+              ref.read(scanCameraControllerProvider.notifier).initialize(),
+          onGallery: _pickFromGallery,
+        ),
+        ScanCameraError(:final message) => _ErrorView(
+          message: message,
+          onRetry: () =>
+              ref.read(scanCameraControllerProvider.notifier).initialize(),
+          onGallery: _pickFromGallery,
+        ),
+      },
     );
   }
 }
 
-/// Resumo do que o OCR encontrou e do que o parser identificou na etiqueta.
-class _OcrSummary extends StatelessWidget {
-  const _OcrSummary({required this.result, required this.label});
-
-  final OcrResult result;
-  final ParsedLabel label;
+/// View padrão enquanto a câmera é inicializada / a permissão é checada.
+class _LoadingView extends StatelessWidget {
+  const _LoadingView();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    if (result.hasError) {
-      return const _InfoCard(
-        icon: Icons.error_outline,
-        color: Color(0xFFB3261E),
-        title: 'Não foi possível ler a etiqueta',
-        message: 'Você ainda pode continuar e preencher os dados manualmente.',
-      );
-    }
-
-    if (!result.hasData) {
-      return const _InfoCard(
-        icon: Icons.info_outline,
-        color: Color(0xFF1565C0),
-        title: 'Nada detectado na imagem',
-        message: 'Tente outra foto ou continue preenchendo manualmente.',
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const _InfoCard(
-          icon: Icons.check_circle_outline,
-          color: Color(0xFF2E7D32),
-          title: 'Etiqueta lida',
-          message: 'Confira os dados identificados abaixo.',
-        ),
-        const SizedBox(height: 12),
-        _IdentifiedCard(label: label),
-        if (result.hasText) ...[
-          const SizedBox(height: 12),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Texto reconhecido',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(result.text!, style: theme.textTheme.bodySmall),
-                ],
-              ),
-            ),
-          ),
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(color: Colors.white),
+          SizedBox(height: 16),
+          Text('Abrindo a câmera...', style: TextStyle(color: Colors.white)),
         ],
+      ),
+    );
+  }
+}
+
+/// Preview fullscreen + overlay de mira + botão "Capturar manualmente".
+class _ReadyView extends StatefulWidget {
+  const _ReadyView({
+    required this.controller,
+    required this.onManualCapture,
+    required this.onMount,
+  });
+
+  final CameraController controller;
+  final VoidCallback onManualCapture;
+  final VoidCallback onMount;
+
+  @override
+  State<_ReadyView> createState() => _ReadyViewState();
+}
+
+class _ReadyViewState extends State<_ReadyView> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => widget.onMount());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Center(
+          child: AspectRatio(
+            aspectRatio: 1 / widget.controller.value.aspectRatio,
+            child: CameraPreview(widget.controller),
+          ),
+        ),
+        const _AimOverlay(),
+        Positioned(
+          left: 24,
+          right: 24,
+          bottom: 32,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Aponte para a etiqueta — capturamos automaticamente.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  shadows: [Shadow(blurRadius: 4, color: Colors.black54)],
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: widget.onManualCapture,
+                icon: const Icon(Icons.camera_alt_outlined),
+                label: const Text('Capturar manualmente'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(52),
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
     );
   }
 }
 
-/// Mostra destinatário, unidade e código que o parser conseguiu identificar.
-class _IdentifiedCard extends StatelessWidget {
-  const _IdentifiedCard({required this.label});
-
-  final ParsedLabel label;
+/// Overlay com área retangular destacando a região da etiqueta.
+class _AimOverlay extends StatelessWidget {
+  const _AimOverlay();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      color: theme.colorScheme.primaryContainer,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Dados identificados',
-              style: theme.textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: theme.colorScheme.onPrimaryContainer,
+    return IgnorePointer(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth * 0.8;
+          final height = constraints.maxHeight * 0.35;
+          return Center(
+            child: Container(
+              width: width,
+              height: height,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.white, width: 2),
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
-            const SizedBox(height: 10),
-            _IdentifiedRow(
-              icon: Icons.person_outline,
-              label: 'Destinatário',
-              value: label.recipientName,
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Empty state mostrado quando a permissão de câmera está negada.
+class _PermissionDeniedView extends StatelessWidget {
+  const _PermissionDeniedView({
+    required this.permanently,
+    required this.onOpenSettings,
+    required this.onRetry,
+    required this.onGallery,
+  });
+
+  final bool permanently;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onRetry;
+  final VoidCallback onGallery;
+
+  @override
+  Widget build(BuildContext context) {
+    final message = permanently
+        ? 'Permissão de câmera bloqueada. Libere nas configurações para '
+              'escanear etiquetas.'
+        : 'Precisamos da câmera para ler a etiqueta. Toque em "Permitir" '
+              'para continuar.';
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(
+              Icons.no_photography_outlined,
+              size: 64,
+              color: Colors.white70,
             ),
-            _IdentifiedRow(
-              icon: Icons.apartment_outlined,
-              label: 'Unidade',
-              value: label.unit,
+            const SizedBox(height: 16),
+            const Text(
+              'Câmera indisponível',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-            _IdentifiedRow(
-              icon: Icons.qr_code,
-              label: 'Código',
-              value: label.trackingCode,
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 24),
+            if (permanently)
+              FilledButton.icon(
+                onPressed: onOpenSettings,
+                icon: const Icon(Icons.settings_outlined),
+                label: const Text('Abrir configurações'),
+              )
+            else
+              FilledButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Tentar novamente'),
+              ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: onGallery,
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text('Usar foto da galeria'),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
             ),
           ],
         ),
@@ -285,95 +409,46 @@ class _IdentifiedCard extends StatelessWidget {
   }
 }
 
-class _IdentifiedRow extends StatelessWidget {
-  const _IdentifiedRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String? value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final onContainer = theme.colorScheme.onPrimaryContainer;
-    final found = value != null && value!.isNotEmpty;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: onContainer),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 96,
-            child: Text(
-              label,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: onContainer.withValues(alpha: 0.8),
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              found ? value! : 'não identificado',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontWeight: found ? FontWeight.w700 : FontWeight.w400,
-                color: found
-                    ? onContainer
-                    : onContainer.withValues(alpha: 0.55),
-                fontStyle: found ? FontStyle.normal : FontStyle.italic,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoCard extends StatelessWidget {
-  const _InfoCard({
-    required this.icon,
-    required this.color,
-    required this.title,
+/// View de erro técnico (sem câmera no aparelho, plugin indisponível, etc.).
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({
     required this.message,
+    required this.onRetry,
+    required this.onGallery,
   });
 
-  final IconData icon;
-  final Color color;
-  final String title;
   final String message;
+  final VoidCallback onRetry;
+  final VoidCallback onGallery;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      color: color.withValues(alpha: 0.10),
+    return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Icon(icon, color: color),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(message, style: theme.textTheme.bodySmall),
-                ],
-              ),
+            const Icon(Icons.error_outline, size: 64, color: Colors.white70),
+            const SizedBox(height: 16),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar novamente'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: onGallery,
+              icon: const Icon(Icons.photo_library_outlined),
+              label: const Text('Usar foto da galeria'),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white),
             ),
           ],
         ),
